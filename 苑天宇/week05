@@ -1,0 +1,202 @@
+tast1
+TD-ID
+
+import csv
+import jieba
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from tqdm import tqdm
+
+# 定义函数，用于加载tsv格式的数据
+def load_tsv_data(filename):
+    book_comments = {}
+    with open(filename, 'r', encoding='utf-8') as f:  # 明确指定编码
+        reader = csv.DictReader(f, delimiter='\t')
+        for item in reader:
+            book_name = item.get('book', '')  # 使用get避免KeyError
+            comments = item.get('body')  # 使用get获取评论，允许默认值
+            if not comments:  # 评论内容为空时跳过
+                continue
+            if not book_name:  # 图书名称为空时跳过
+                continue
+            comment_words = jieba.lcut(comments)
+            book_comments[book_name] = book_comments.get(book_name, [])
+            book_comments[book_name].extend(comment_words)
+    return book_comments
+
+if __name__ == '__main__':
+    file_name = r'E:\2025八斗AI\八斗学院深度学习2025\八斗精品班\第二周_pytorch逻辑回归\23_week02答案\TDIDF_CODES\doubanbook_comments_fixd.txt'
+    stopwords_path = r'E:\2025八斗AI\八斗学院深度学习2025\八斗精品班\第二周_pytorch逻辑回归\23_week02答案\TDIDF_CODES\stopwords.txt'
+    
+    # 加载停用词，增加异常处理
+    try:
+        stopwords = [word.strip() for word in open(stopwords_path, 'r', encoding='utf-8')]
+    except FileNotFoundError:
+        print(f"停用词文件 {stopwords_path} 未找到，使用空停用词列表")
+        stopwords = []
+    
+    print('加载图书评论数据...')
+    book_comments = load_tsv_data(file_name)
+    print('图书评论数据加载完毕！')
+    
+    books_list = list(book_comments.keys())
+    print('图书数量:', len(books_list))
+
+    print('构建TF-IDF矩阵...')
+    vectorizer = TfidfVectorizer(stop_words=stopwords)
+    tfidf_matrix = vectorizer.fit_transform([' '.join(book_comments[book_name]) for book_name in books_list])
+    print('TF-IDF矩阵构建完毕！')
+
+    similarities = cosine_similarity(tfidf_matrix)
+
+    print(books_list)
+    book_name = input("请输入图书名称：")
+    try:
+        book_idx = books_list.index(book_name)
+        recommend_book_idxs = np.argsort(-similarities[book_idx])[1:11]
+        print('为您推荐的图书有：\n')
+        for idx in recommend_book_idxs:
+            print(f"{books_list[idx]}  相似度: {similarities[book_idx][idx]:.4f}")
+    except ValueError:
+        print(f"输入的图书名称 {book_name} 未在列表中找到")
+BM25
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.sparse import lil_matrix
+
+
+def bm25(comments, k=1.5, b=0.75, min_freq=5):
+    # 统计词频和文档频率
+    word_doc_freq = {}
+    doc_term_dict = [{} for _ in range(len(comments))]
+    doc_lengths = []
+    for i, comment in enumerate(comments):
+        doc_len = len(comment)
+        doc_lengths.append(doc_len)
+        unique_words = set()
+        for word in comment:
+            doc_term_dict[i][word] = doc_term_dict[i].get(word, 0) + 1
+            unique_words.add(word)
+        for word in unique_words:
+            word_doc_freq[word] = word_doc_freq.get(word, 0) + 1
+
+    # 过滤低频词
+    filtered_word_doc_freq = {word: freq for word, freq in word_doc_freq.items() if freq >= min_freq}
+    vocabulary = list(filtered_word_doc_freq.keys())
+    word_index = {word: idx for idx, word in enumerate(vocabulary)}
+
+    # 创建稀疏文档 - 词频矩阵
+    doc_term_matrix = lil_matrix((len(comments), len(vocabulary)))
+    for i in range(len(comments)):
+        for word, freq in doc_term_dict[i].items():
+            if word in word_index:
+                idx = word_index[word]
+                doc_term_matrix[i, idx] = freq
+    print(f"稀疏文档-词频矩阵创建完成，形状：{doc_term_matrix.shape}")  # 新增调试输出
+
+    # 计算平均文档长度
+    avg_doc_len = np.mean(doc_lengths)
+
+    # 计算IDF值
+    N = len(comments)
+    idf_numerator = N - np.array([filtered_word_doc_freq[word] for word in vocabulary]) + 0.5
+    idf_denominator = np.array([filtered_word_doc_freq[word] for word in vocabulary]) + 0.5
+    idf = np.log(idf_numerator / idf_denominator)
+    idf[idf_numerator <= 0] = 0
+
+    # 计算BM25分数矩阵
+    bm25_matrix = lil_matrix((len(comments), len(vocabulary)))
+    for i in range(len(comments)):
+        tf = doc_term_matrix[i].toarray().flatten()
+        bm25 = idf * (tf * (k + 1)) / (tf + k * (1 - b + b * doc_lengths[i] / avg_doc_len))
+        bm25_matrix[i] = lil_matrix(bm25)
+    print("BM25分数矩阵计算完成")  # 新增调试输出
+    return bm25_matrix
+
+
+def load_stopwords(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        stopwords = [line.strip() for line in f.readlines()]
+    stopwords_set = set(stopwords)
+    print(f"停用词加载完成，数量：{len(stopwords_set)}")  # 新增调试输出
+    return stopwords_set
+
+
+def load_comments(file_path, stopwords):
+    comments = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line_idx, line in enumerate(f.readlines()):
+            comment = line.strip().split()
+            filtered_comment = [word for word in comment if word not in stopwords]
+            comments.append(filtered_comment)
+            # 每处理100条打印一次（避免输出过多）
+            if line_idx % 100 == 0:  
+                print(f"处理第{line_idx}条评论，过滤后结果：{filtered_comment[:10]}...")  
+    print(f"评论加载完成，总数量：{len(comments)}")  # 新增调试输出
+    return comments
+
+
+def recommend_books(comments, target_index, top_n=5):
+    bm25_scores = bm25(comments)
+    similarity_matrix = cosine_similarity(bm25_scores)
+    target_similarities = similarity_matrix[target_index]
+    sorted_indices = np.argsort(target_similarities)[::-1]
+    top_indices = sorted_indices[1:top_n + 1]
+    print(f"与第{target_index}本书相似的前{len(top_indices)}本书的索引为: {top_indices}")  # 输出推荐结果
+    return top_indices
+
+
+# 加载停用词
+stopwords_file = r'E:\2025八斗AI\八斗学院深度学习2025\八斗精品班\第二周_pytorch逻辑回归\23_week02答案\TDIDF_CODES\stopwords.txt'
+stopwords = load_stopwords(stopwords_file)
+
+# 加载评论
+comments_file = r'E:\2025八斗AI\八斗学院深度学习2025\八斗精品班\第二周_pytorch逻辑回归\23_week02答案\TDIDF_CODES\doubanbook_comments_fixd.txt'
+comments = load_comments(comments_file, stopwords)
+
+# 示例：为第0本书推荐相似书籍
+target_index = 0
+recommended_indices = recommend_books(comments, target_index)
+
+tast2
+训练文档为三国演义
+import jieba
+import fasttext
+'''
+#文档分词预处理
+with open('threekingdoms.txt', 'r', encoding='utf-8') as f:  
+    content = f.read()  # 先读取为字符串  
+    seg_list = jieba.lcut(content)  
+    result = ' '.join(seg_list)  # 拼接分词结果  
+    # 写入文件  
+    with open('threekingdoms_c.txt', 'w', encoding='utf-8') as f_out:  
+        f_out.write(result)  
+'''
+
+modle = fasttext.train_unsupervised('threekingdoms_c.txt', model='skipgram')
+
+print(len(modle.words))
+
+#获取词向量
+print(modle.get_word_vector('曹操'))  # 注意变量名是否正确，若应为 model，需同步修正
+
+#获取相似词
+print(modle.get_nearest_neighbors('曹操',k=5))
+
+#分析词间类比
+print(modle.get_analogies('曹操','刘备','孙权'))
+
+#保存模型
+modle.save_model('threekingdoms.bin')
+
+tast3
+import fasttext
+
+
+
+modle = fasttext.train_supervised('cooking.stackexchange.txt',lr=0.5,epoch=25,wordNgrams=2)
+
+print(modle.labels)
+#保存模型
+modle.save_model('model.bin')
